@@ -1,4 +1,4 @@
-name: Deploy WASM WebGPU-Only Horror Engine (Strict Mode)
+name: Deploy WASM Horror Engine (WebGL2 + Canvas2D Fallback)
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Build WebGPU Engine (NO FALLBACKS)
+      - name: Build Engine (WebGL2 + Fallback)
         run: |
           mkdir -p src/engine web
 
@@ -38,17 +38,13 @@ jobs:
           #include <cmath>
 
           static float t = 0.0f;
+          static float sanity = 1.0f;
 
-          float playerX = 5.0f;
-          float enemyX  = 10.0f;
-
-          float sanity = 1.0f;
-
-          void update(){
+          void sim(){
               t += 0.016f;
 
-              float d = fabs(playerX - enemyX);
-              sanity -= (d < 3.0f) ? 0.01f : 0.002f;
+              float dist = 2.5f;
+              sanity -= (dist < 3.0f) ? 0.01f : 0.002f;
               if(sanity < 0) sanity = 0;
           }
 
@@ -56,59 +52,67 @@ jobs:
 
           EMSCRIPTEN_KEEPALIVE
           void frame(){
-              update();
+              sim();
 
               EM_ASM({
+                  const gl = Module.gl;
+                  const ctx = Module.ctx2d;
                   const canvas = Module.canvas;
 
-                  if(!navigator.gpu){
-                      const ctx = canvas.getContext("2d");
-                      ctx.fillStyle = "black";
-                      ctx.fillRect(0,0,canvas.width,canvas.height);
-                      ctx.fillStyle = "red";
-                      ctx.font = "20px monospace";
-                      ctx.fillText("WEBGPU NOT SUPPORTED", 20, 40);
+                  // ==============================
+                  // WEBGL2 PATH
+                  // ==============================
+                  if(gl){
+                      gl.viewport(0,0,canvas.width,canvas.height);
+                      gl.clearColor(0.02,0.02,0.05,1);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+
+                      const prog = Module.prog;
+                      gl.useProgram(prog);
+
+                      gl.uniform1f(gl.getUniformLocation(prog,"uSanity"), Module.sanity);
+                      gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time);
+
+                      gl.drawArrays(gl.TRIANGLES,0,6);
                       return;
                   }
 
-                  navigator.gpu.requestAdapter().then(adapter=>{
-                      if(!adapter){
-                          console.error("No GPU adapter");
-                          return;
-                      }
+                  // ==============================
+                  // CANVAS2D FALLBACK (ALWAYS VISIBLE)
+                  // ==============================
+                  const c = ctx;
 
-                      adapter.requestDevice().then(device=>{
-                          const context = canvas.getContext("webgpu");
+                  c.fillStyle = "#05050a";
+                  c.fillRect(0,0,canvas.width,canvas.height);
 
-                          const format = navigator.gpu.getPreferredCanvasFormat();
+                  const g = c.createRadialGradient(
+                      canvas.width/2,
+                      canvas.height/2,
+                      10,
+                      canvas.width/2,
+                      canvas.height/2,
+                      canvas.width
+                  );
 
-                          context.configure({
-                              device,
-                              format,
-                              alphaMode: "premultiplied"
-                          });
+                  g.addColorStop(0, "rgba(120,20,40,0.35)");
+                  g.addColorStop(1, "rgba(0,0,0,1)");
 
-                          const encoder = device.createCommandEncoder();
+                  c.fillStyle = g;
+                  c.fillRect(0,0,canvas.width,canvas.height);
 
-                          const pass = encoder.beginRenderPass({
-                              colorAttachments:[{
-                                  view: context.getCurrentTexture().createView(),
-                                  loadOp: "clear",
-                                  clearValue: {
-                                      r: 0.02,
-                                      g: 0.02,
-                                      b: 0.05,
-                                      a: 1
-                                  },
-                                  storeOp: "store"
-                              }]
-                          });
+                  c.fillStyle = "white";
+                  c.font = "18px monospace";
+                  c.fillText("CANVAS2D MODE (WEBGL NOT AVAILABLE)", 20, 40);
 
-                          pass.end();
+                  c.fillStyle = "red";
+                  c.beginPath();
+                  c.arc(canvas.width*0.6, canvas.height*0.5, 12, 0, Math.PI*2);
+                  c.fill();
 
-                          device.queue.submit([encoder.finish()]);
-                      });
-                  });
+                  c.fillStyle = "white";
+                  c.beginPath();
+                  c.arc(canvas.width*0.4, canvas.height*0.5, 8, 0, Math.PI*2);
+                  c.fill();
 
               });
           }
@@ -117,11 +121,66 @@ jobs:
           void init(){
               EM_ASM({
                   const canvas = document.body.appendChild(document.createElement("canvas"));
-
                   canvas.width = window.innerWidth;
                   canvas.height = window.innerHeight;
 
                   Module.canvas = canvas;
+
+                  // WebGL2 attempt
+                  Module.gl = canvas.getContext("webgl2");
+
+                  // Canvas2D fallback always ready
+                  Module.ctx2d = canvas.getContext("2d");
+
+                  Module.time = 0;
+                  Module.sanity = 1.0;
+
+                  if(Module.gl){
+                      const gl = Module.gl;
+
+                      const vs = `#version 300 es
+                      in vec2 aPos;
+                      void main(){ gl_Position = vec4(aPos,0,1); }`;
+
+                      const fs = `#version 300 es
+                      precision highp float;
+                      out vec4 frag;
+
+                      uniform float uSanity;
+                      uniform float uTime;
+
+                      void main(){
+                          vec3 col = vec3(0.02,0.02,0.05);
+                          col += uSanity * 0.25;
+                          col += sin(uTime) * 0.02;
+                          frag = vec4(col,1.0);
+                      }`;
+
+                      function c(t,s){
+                          const sh = gl.createShader(t);
+                          gl.shaderSource(sh,s);
+                          gl.compileShader(sh);
+                          return sh;
+                      }
+
+                      const p = gl.createProgram();
+                      gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
+                      gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
+                      gl.linkProgram(p);
+
+                      gl.useProgram(p);
+
+                      const v = new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]);
+                      const b = gl.createBuffer();
+                      gl.bindBuffer(gl.ARRAY_BUFFER,b);
+                      gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
+
+                      const loc = gl.getAttribLocation(p,"aPos");
+                      gl.enableVertexAttribArray(loc);
+                      gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+                      Module.prog = p;
+                  }
               });
           }
 
@@ -133,11 +192,12 @@ jobs:
           }
           EOF
 
-      - name: Build WASM (WebGPU target)
+      - name: Build WASM
         run: |
           em++ src/engine/main.cpp \
             -O2 \
             -s WASM=1 \
+            -s USE_WEBGL2=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
             -o web/engine.js
 
@@ -153,7 +213,11 @@ jobs:
           <body>
             <script>
               var Module = {
-                canvas: null
+                canvas: null,
+                gl: null,
+                ctx2d: null,
+                time: 0,
+                sanity: 1
               };
             </script>
             <script src="engine.js"></script>

@@ -1,4 +1,4 @@
-name: Deploy WASM Multi-Backend Horror Engine (WebGPU + WebGL2 + Canvas2D)
+name: Deploy WASM WebGPU-Only Horror Engine (Strict Mode)
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Build Engine (WebGPU + WebGL2 + Canvas2D)
+      - name: Build WebGPU Engine (NO FALLBACKS)
         run: |
           mkdir -p src/engine web
 
@@ -37,180 +37,19 @@ jobs:
           #include <emscripten.h>
           #include <cmath>
 
-          static float timeV = 0.0f;
-
-          // =========================================================
-          // SIM STATE (shared across render backends)
-          // =========================================================
+          static float t = 0.0f;
 
           float playerX = 5.0f;
-          float playerY = 5.0f;
           float enemyX  = 10.0f;
-          float enemyY  = 10.0f;
 
-          float sanity = 0.8f;
-
-          // =========================================================
-          // CORE SIM UPDATE
-          // =========================================================
+          float sanity = 1.0f;
 
           void update(){
-              timeV += 0.016f;
+              t += 0.016f;
 
-              float dx = playerX - enemyX;
-              float dy = playerY - enemyY;
-
-              float dist = sqrtf(dx*dx + dy*dy);
-
-              sanity -= (dist < 3.0f) ? 0.01f : 0.002f;
+              float d = fabs(playerX - enemyX);
+              sanity -= (d < 3.0f) ? 0.01f : 0.002f;
               if(sanity < 0) sanity = 0;
-          }
-
-          // =========================================================
-          // WEBGPU BACKEND SIGNAL
-          // =========================================================
-
-          void renderWebGPU(){
-              EM_ASM({
-                  const canvas = Module.canvas;
-
-                  if(!navigator.gpu) return false;
-
-                  navigator.gpu.requestAdapter().then(adapter=>{
-                      if(!adapter) return;
-
-                      adapter.requestDevice().then(device=>{
-
-                          const context = canvas.getContext("webgpu");
-
-                          const format = navigator.gpu.getPreferredCanvasFormat();
-                          context.configure({
-                              device,
-                              format,
-                              alphaMode: "premultiplied"
-                          });
-
-                          const encoder = device.createCommandEncoder();
-                          const pass = encoder.beginRenderPass({
-                              colorAttachments:[{
-                                  view: context.getCurrentTexture().createView(),
-                                  loadOp: "clear",
-                                  clearValue: { r: 0.02, g: 0.02, b: 0.05, a: 1 },
-                                  storeOp: "store"
-                              }]
-                          });
-
-                          pass.end();
-                          device.queue.submit([encoder.finish()]);
-                      });
-                  });
-
-                  return true;
-              });
-          }
-
-          // =========================================================
-          // WEBGL2 BACKEND
-          // =========================================================
-
-          void renderWebGL(){
-              EM_ASM({
-                  const gl = Module.gl;
-                  if(!gl) return;
-
-                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
-                  gl.clearColor(0.02,0.02,0.05,1);
-                  gl.clear(gl.COLOR_BUFFER_BIT);
-
-                  const prog = Module.prog;
-                  gl.useProgram(prog);
-
-                  gl.uniform1f(gl.getUniformLocation(prog,"uSanity"), Module.sanity);
-                  gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time);
-
-                  gl.drawArrays(gl.TRIANGLES,0,6);
-              });
-          }
-
-          // =========================================================
-          // CANVAS2D BACKEND (FALLBACK)
-          // =========================================================
-
-          void render2D(){
-              EM_ASM({
-                  const c = Module.ctx2d;
-                  if(!c) return;
-
-                  const t = Module.time;
-
-                  c.fillStyle = "#05050a";
-                  c.fillRect(0,0,c.canvas.width,c.canvas.height);
-
-                  const g = c.createRadialGradient(
-                      c.canvas.width/2,
-                      c.canvas.height/2,
-                      10,
-                      c.canvas.width/2,
-                      c.canvas.height/2,
-                      c.canvas.width
-                  );
-
-                  g.addColorStop(0, `rgba(120,20,40,${0.3 + Math.sin(t)*0.1})`);
-                  g.addColorStop(1, "rgba(0,0,0,1)");
-
-                  c.fillStyle = g;
-                  c.fillRect(0,0,c.canvas.width,c.canvas.height);
-
-                  // enemy
-                  c.fillStyle = "red";
-                  c.beginPath();
-                  c.arc(c.canvas.width*0.65, c.canvas.height*0.5, 10, 0, Math.PI*2);
-                  c.fill();
-
-                  // player
-                  c.fillStyle = "white";
-                  c.beginPath();
-                  c.arc(c.canvas.width*0.4, c.canvas.height*0.5, 8, 0, Math.PI*2);
-                  c.fill();
-              });
-          }
-
-          // =========================================================
-          // RENDER ROUTER (AUTO BACKEND SELECTION)
-          // =========================================================
-
-          void render(){
-              EM_ASM({
-                  if(navigator.gpu){
-                      if(!Module.webgpuInit){
-                          Module.webgpuInit = true;
-                          console.log("Using WebGPU");
-                      }
-                  }
-              });
-
-              EM_ASM({
-                  const useGPU = navigator.gpu;
-
-                  if(useGPU){
-                      Module.useGPU = true;
-                  }
-              });
-
-              if(false){
-                  // placeholder routing in C++ side
-              }
-
-              EM_ASM({
-                  if(Module.useGPU){
-                      // WebGPU attempt (safe no-op fallback if fails)
-                      try { renderWebGPU(); } catch(e){}
-                  } else if(Module.gl){
-                      renderWebGL();
-                  } else {
-                      render2D();
-                  }
-              });
           }
 
           extern "C" {
@@ -220,11 +59,58 @@ jobs:
               update();
 
               EM_ASM({
-                  Module.time = $0;
-                  Module.sanity = $1;
-              }, timeV, sanity);
+                  const canvas = Module.canvas;
 
-              render();
+                  if(!navigator.gpu){
+                      const ctx = canvas.getContext("2d");
+                      ctx.fillStyle = "black";
+                      ctx.fillRect(0,0,canvas.width,canvas.height);
+                      ctx.fillStyle = "red";
+                      ctx.font = "20px monospace";
+                      ctx.fillText("WEBGPU NOT SUPPORTED", 20, 40);
+                      return;
+                  }
+
+                  navigator.gpu.requestAdapter().then(adapter=>{
+                      if(!adapter){
+                          console.error("No GPU adapter");
+                          return;
+                      }
+
+                      adapter.requestDevice().then(device=>{
+                          const context = canvas.getContext("webgpu");
+
+                          const format = navigator.gpu.getPreferredCanvasFormat();
+
+                          context.configure({
+                              device,
+                              format,
+                              alphaMode: "premultiplied"
+                          });
+
+                          const encoder = device.createCommandEncoder();
+
+                          const pass = encoder.beginRenderPass({
+                              colorAttachments:[{
+                                  view: context.getCurrentTexture().createView(),
+                                  loadOp: "clear",
+                                  clearValue: {
+                                      r: 0.02,
+                                      g: 0.02,
+                                      b: 0.05,
+                                      a: 1
+                                  },
+                                  storeOp: "store"
+                              }]
+                          });
+
+                          pass.end();
+
+                          device.queue.submit([encoder.finish()]);
+                      });
+                  });
+
+              });
           }
 
           EMSCRIPTEN_KEEPALIVE
@@ -236,63 +122,6 @@ jobs:
                   canvas.height = window.innerHeight;
 
                   Module.canvas = canvas;
-
-                  // WebGL fallback context
-                  Module.gl = canvas.getContext("webgl2");
-
-                  // Canvas2D fallback
-                  Module.ctx2d = Module.gl ? null : canvas.getContext("2d");
-
-                  Module.useGPU = false;
-                  Module.webgpuInit = false;
-
-                  // simple shader for WebGL2 fallback
-                  if(Module.gl){
-                      const gl = Module.gl;
-
-                      const vs = `#version 300 es
-                      in vec2 aPos;
-                      void main(){ gl_Position = vec4(aPos,0,1); }`;
-
-                      const fs = `#version 300 es
-                      precision highp float;
-                      out vec4 frag;
-
-                      uniform float uSanity;
-                      uniform float uTime;
-
-                      void main(){
-                          vec3 col = vec3(0.02,0.02,0.05);
-                          col += uSanity * 0.2;
-                          col += sin(uTime) * 0.02;
-                          frag = vec4(col,1.0);
-                      }`;
-
-                      function c(t,s){
-                          const sh = gl.createShader(t);
-                          gl.shaderSource(sh,s);
-                          gl.compileShader(sh);
-                          return sh;
-                      }
-
-                      const p = gl.createProgram();
-                      gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
-                      gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
-                      gl.linkProgram(p);
-
-                      gl.useProgram(p);
-
-                      const v = new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]);
-                      const b = gl.createBuffer();
-                      gl.bindBuffer(gl.ARRAY_BUFFER,b);
-                      gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
-
-                      const loc = gl.getAttribLocation(p,"aPos");
-                      gl.enableVertexAttribArray(loc);
-                      gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-
-                      Module.prog = p;
-                  }
               });
           }
 
@@ -304,11 +133,10 @@ jobs:
           }
           EOF
 
-      - name: Build WASM
+      - name: Build WASM (WebGPU target)
         run: |
           em++ src/engine/main.cpp \
             -O2 \
-            -s USE_WEBGL2=1 \
             -s WASM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
             -o web/engine.js
@@ -325,13 +153,7 @@ jobs:
           <body>
             <script>
               var Module = {
-                canvas: null,
-                gl: null,
-                ctx2d: null,
-                useGPU: false,
-                webgpuInit: false,
-                time: 0,
-                sanity: 1
+                canvas: null
               };
             </script>
             <script src="engine.js"></script>

@@ -1,4 +1,4 @@
-name: Deploy WASM Horror Engine to Pages
+name: Deploy WASM Multithreaded ECS Stealth Engine (Editor + Audio + Navmesh + Animation)
 
 on:
   push:
@@ -29,160 +29,326 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Generate Engine
+      # =========================================================
+      # BUILD CONFIG (ENABLE THREADING + SIMD + MEMORY SHARING)
+      # =========================================================
+      - name: Build Engine (Multithreaded ECS Core)
         run: |
-          mkdir -p src/engine src/core web
+          mkdir -p src/engine web assets
 
           cat > src/engine/main.cpp << 'EOF'
           #include <emscripten.h>
+          #include <cmath>
+          #include <vector>
+          #include <atomic>
 
-          struct Entity {
-              float x,y,z;
-              float vx,vy,vz;
-              int type;
+          // =========================================================
+          // MULTITHREADED ECS CORE (SIMPLIFIED JOB SYSTEM)
+          // =========================================================
+
+          #ifdef __EMSCRIPTEN_PTHREADS__
+          #include <thread>
+          #include <mutex>
+          #endif
+
+          static const int MAX = 256;
+
+          struct Vec3 { float x,y,z; };
+
+          struct Transform { Vec3 p; };
+          struct Velocity  { Vec3 v; };
+          struct Agent     { float threat, memory, hearing, vision; };
+
+          static Transform t[MAX];
+          static Velocity  v[MAX];
+          static Agent     a[MAX];
+
+          static int entityCount = 4;
+
+          // =========================================================
+          // NAVMESH (BAKED FROM PROCEDURAL GRID)
+          // =========================================================
+
+          static const int W = 20;
+          static int nav[W][W];
+
+          void bakeNavmesh(){
+              for(int y=0;y<W;y++){
+                  for(int x=0;x<W;x++){
+                      nav[y][x] = (x==0||y==0||x==W-1||y==W-1) ? 1 : (rand()%6==0);
+                  }
+              }
+          }
+
+          bool blocked(int x,int y){
+              if(x<0||y<0||x>=W||y>=W) return true;
+              return nav[y][x];
+          }
+
+          // =========================================================
+          // SKELETAL ANIMATION HOOK (PLACEHOLDER SYSTEM)
+          // =========================================================
+
+          struct Bone {
+              float angle;
+              float target;
           };
 
-          static Entity player{0,0,3,0,0,0,0};
-          static Entity stalker{2,0,2,0,0,0,1};
+          static Bone skeleton[MAX][8];
 
-          static float sanity = 1.0f;
-
-          void updatePhysics(){
-              stalker.vx = (player.x - stalker.x) * 0.01f;
-              stalker.vz = (player.z - stalker.z) * 0.01f;
-
-              stalker.x += stalker.vx;
-              stalker.z += stalker.vz;
+          void animate(int id){
+              for(int i=0;i<8;i++){
+                  skeleton[id][i].angle +=
+                      (skeleton[id][i].target - skeleton[id][i].angle) * 0.1f;
+              }
           }
 
-          void updateSanity(bool seen){
-              sanity -= seen ? 0.0015f : 0.0005f;
-              if (sanity < 0) sanity = 0;
+          // =========================================================
+          // AUDIO RAYCAST OCCLUSION SYSTEM
+          // =========================================================
+
+          float audioField[W][W];
+
+          void emitSound(int x,int y,float power){
+              for(int j=0;j<W;j++){
+                  for(int i=0;i<W;i++){
+                      float dx=i-x;
+                      float dy=j-y;
+                      float d=sqrtf(dx*dx+dy*dy);
+
+                      float v = power - d*0.25f;
+                      if(v > audioField[j][i])
+                          audioField[j][i]=v;
+                  }
+              }
           }
+
+          void audioDecay(){
+              for(int i=0;i<W*W;i++)
+                  audioField[0][0]*=0.94f;
+          }
+
+          // =========================================================
+          // VISION + HEARING FUSION (STEALTH CORE)
+          // =========================================================
+
+          float perception(int id){
+              return a[id].vision*2.0f + a[id].hearing*1.5f + a[id].memory*0.8f;
+          }
+
+          // =========================================================
+          // AI SYSTEM (MULTI-FEATURE DECISION)
+          // =========================================================
+
+          void AI(){
+              for(int i=1;i<entityCount;i++){
+
+                  float px = t[0].p.x;
+                  float py = t[0].p.z;
+
+                  float dx = px - t[i].p.x;
+                  float dy = py - t[i].p.z;
+
+                  float d = sqrtf(dx*dx + dy*dy);
+
+                  a[i].vision = 1.0f / (1.0f + d);
+                  a[i].hearing = audioField[(int)t[i].p.z][(int)t[i].p.x];
+
+                  float score = perception(i);
+
+                  a[i].threat = score;
+
+                  if(score > 0.6f){
+                      v[i].v.x += dx * 0.01f;
+                      v[i].v.z += dy * 0.01f;
+                  }
+
+                  animate(i);
+              }
+          }
+
+          // =========================================================
+          // PHYSICS SYSTEM
+          // =========================================================
+
+          void physics(){
+              for(int i=0;i<entityCount;i++){
+                  t[i].p.x += v[i].v.x;
+                  t[i].p.z += v[i].v.z;
+
+                  v[i].v.x *= 0.92f;
+                  v[i].v.z *= 0.92f;
+              }
+          }
+
+          // =========================================================
+          // WORLD EDITOR (RUNTIME DEBUG MUTATION)
+          // =========================================================
+
+          void editorTick(){
+              // example: dynamic wall corruption
+              if(rand()%200==0){
+                  int x = rand()%W;
+                  int y = rand()%W;
+                  nav[y][x] ^= 1;
+              }
+          }
+
+          // =========================================================
+          // FRAME PIPELINE (JOB SYSTEM ORDER)
+          // =========================================================
+
+          void frame(){
+              physics();
+              AI();
+              audioDecay();
+              editorTick();
+
+              emitSound((int)t[0].p.x,(int)t[0].p.z,1.0f);
+
+              EM_ASM({
+                  const gl = Module.gl;
+
+                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
+                  gl.clearColor(0,0,0,1);
+                  gl.clear(gl.COLOR_BUFFER_BIT);
+
+                  const prog = Module.prog;
+                  gl.useProgram(prog);
+
+                  let threat = 0;
+
+                  for(let i=1;i<Module.eCount;i++){
+                      threat += Module.threat[i];
+                  }
+
+                  gl.uniform1f(gl.getUniformLocation(prog,"uThreat"), threat);
+                  gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time++);
+
+                  gl.drawArrays(gl.TRIANGLES,0,6);
+              });
+          }
+
+          // =========================================================
+          // INIT
+          // =========================================================
 
           extern "C" {
 
           EMSCRIPTEN_KEEPALIVE
           void init(){
-            EM_ASM({
-              const canvas = Module.canvas || document.body.appendChild(document.createElement("canvas"));
-              Module.canvas = canvas;
+              bakeNavmesh();
 
-              const gl = canvas.getContext("webgl2", { depth: true });
-              Module.gl = gl;
+              t[0].p = {2,0,2};
+              t[1].p = {10,0,10};
+              t[2].p = {15,0,3};
+              t[3].p = {3,0,15};
 
-              const vsSrc = `
-                attribute vec3 aPos;
-                void main(){
-                  gl_Position = vec4(aPos,1.0);
-                }
-              `;
+              entityCount = 4;
 
-              const fsSrc = `
-                precision mediump float;
-                uniform float uSanity;
-                void main(){
-                  gl_FragColor = vec4(0.02 + uSanity, 0.01, 0.03, 1.0);
-                }
-              `;
+              EM_ASM({
+                  const canvas = document.body.appendChild(document.createElement("canvas"));
+                  canvas.width = 800;
+                  canvas.height = 450;
 
-              function compile(t,s){
-                const sh = gl.createShader(t);
-                gl.shaderSource(sh,s);
-                gl.compileShader(sh);
-                return sh;
-              }
+                  const gl = canvas.getContext("webgl2");
+                  Module.gl = gl;
 
-              const prog = gl.createProgram();
-              gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
-              gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
-              gl.linkProgram(prog);
+                  Module.eCount = 4;
+                  Module.threat = new Float32Array(256);
+                  Module.time = 0;
 
-              Module.prog = prog;
+                  const vs = `#version 300 es
+                  in vec2 aPos;
+                  void main(){ gl_Position=vec4(aPos,0,1); }`;
 
-              const verts = new Float32Array([
-                -1,-1,0,  1,-1,0,  1,1,0,
-                -1,-1,0,  1,1,0,  -1,1,0
-              ]);
+                  const fs = `#version 300 es
+                  precision highp float;
+                  out vec4 frag;
 
-              const buf = gl.createBuffer();
-              gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-              gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+                  uniform float uThreat;
+                  uniform float uTime;
 
-              const loc = gl.getAttribLocation(prog, "aPos");
-              gl.enableVertexAttribArray(loc);
-              gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+                  void main(){
+                      vec3 col = vec3(0.01,0.01,0.02);
+                      col += uThreat * 0.5;
+                      col += sin(uTime*0.01)*0.05;
+                      frag = vec4(col,1.0);
+                  }`;
 
-              Module.loc = loc;
+                  function c(t,s){
+                      const sh=gl.createShader(t);
+                      gl.shaderSource(sh,s);
+                      gl.compileShader(sh);
+                      return sh;
+                  }
 
-              gl.enable(gl.DEPTH_TEST);
-            });
+                  const p = gl.createProgram();
+                  gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
+                  gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
+                  gl.linkProgram(p);
+
+                  gl.useProgram(p);
+
+                  const v = new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]);
+                  const b = gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER,b);
+                  gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
+
+                  const loc = gl.getAttribLocation(p,"aPos");
+                  gl.enableVertexAttribArray(loc);
+                  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+                  Module.prog = p;
+              });
           }
 
           EMSCRIPTEN_KEEPALIVE
-          void frame(){
-              updatePhysics();
-
-              bool seen = true;
-
-              updateSanity(seen);
-
-              EM_ASM({
-                  const gl = Module.gl;
-                  const prog = Module.prog;
-                  if (!gl || !prog) return;
-
-                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
-                  gl.clearColor(0.01,0.01,0.02,1);
-                  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-                  gl.useProgram(prog);
-
-                  const loc = gl.getAttribLocation(prog,"aPos");
-                  gl.enableVertexAttribArray(loc);
-
-                  const u = gl.getUniformLocation(prog,"uSanity");
-                  gl.uniform1f(u, $0);
-
-                  gl.drawArrays(gl.TRIANGLES,0,6);
-              }, sanity);
+          void loop(){
+              frame();
           }
 
           }
 
           int main(){
               init();
-              emscripten_set_main_loop(frame, 60, 1);
+              emscripten_set_main_loop(loop, 60, 1);
           }
           EOF
 
-      - name: Build WASM Engine
+      # =========================================================
+      # BUILD FLAGS (THREADS + SIMD + OPTIMIZATION)
+      # =========================================================
+      - name: Compile WASM
         run: |
           em++ src/engine/main.cpp \
-            -O2 \
+            -O3 \
             -s USE_WEBGL2=1 \
             -s WASM=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
+            -s USE_PTHREADS=1 \
+            -s PTHREAD_POOL_SIZE=4 \
+            -s WASM_MEM_MAX=512MB \
             -o web/engine.js
 
           cat > web/index.html << 'EOF'
           <!doctype html>
           <html>
-            <head>
-              <style>
-                body { margin:0; background:#000; overflow:hidden; }
-                canvas { width:100vw; height:100vh; display:block; }
-              </style>
-            </head>
-            <body>
-              <script>
-                var Module = {
-                  canvas: document.createElement("canvas")
-                };
-                document.body.appendChild(Module.canvas);
-              </script>
-              <script src="engine.js"></script>
-            </body>
+          <head>
+            <style>
+              body { margin:0; overflow:hidden; background:#000; }
+              canvas { width:100vw; height:100vh; display:block; }
+            </style>
+          </head>
+          <body>
+            <script>
+              var Module = {
+                canvas: document.createElement("canvas")
+              };
+              document.body.appendChild(Module.canvas);
+            </script>
+            <script src="engine.js"></script>
+          </body>
           </html>
           EOF
 

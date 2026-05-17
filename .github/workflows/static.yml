@@ -1,4 +1,4 @@
-name: Deploy WASM Horror Engine (WebGL2 + Canvas2D Fallback)
+name: Deploy Stabilized WASM WebGL Engine (No Black Screen Mode)
 
 on:
   push:
@@ -29,22 +29,20 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Build Engine (WebGL2 + Fallback)
+      - name: Build Stable Engine (Deterministic Render Loop)
         run: |
           mkdir -p src/engine web
 
           cat > src/engine/main.cpp << 'EOF'
           #include <emscripten.h>
-          #include <cmath>
 
           static float t = 0.0f;
-          static float sanity = 1.0f;
+
+          float sanity = 1.0f;
 
           void sim(){
               t += 0.016f;
-
-              float dist = 2.5f;
-              sanity -= (dist < 3.0f) ? 0.01f : 0.002f;
+              sanity -= 0.002f;
               if(sanity < 0) sanity = 0;
           }
 
@@ -55,131 +53,125 @@ jobs:
               sim();
 
               EM_ASM({
-                  const gl = Module.gl;
-                  const ctx = Module.ctx2d;
                   const canvas = Module.canvas;
+                  const gl = Module.gl;
 
-                  // ==============================
-                  // WEBGL2 PATH
-                  // ==============================
-                  if(gl){
-                      gl.viewport(0,0,canvas.width,canvas.height);
-                      gl.clearColor(0.02,0.02,0.05,1);
-                      gl.clear(gl.COLOR_BUFFER_BIT);
-
-                      const prog = Module.prog;
-                      gl.useProgram(prog);
-
-                      gl.uniform1f(gl.getUniformLocation(prog,"uSanity"), Module.sanity);
-                      gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time);
-
-                      gl.drawArrays(gl.TRIANGLES,0,6);
+                  // HARD SAFETY CHECK
+                  if(!canvas){
+                      console.error("No canvas");
                       return;
                   }
 
-                  // ==============================
-                  // CANVAS2D FALLBACK (ALWAYS VISIBLE)
-                  // ==============================
-                  const c = ctx;
+                  if(!gl){
+                      const c = Module.ctx2d;
+                      c.fillStyle = "#000";
+                      c.fillRect(0,0,c.canvas.width,c.canvas.height);
+                      c.fillStyle = "red";
+                      c.font = "20px monospace";
+                      c.fillText("WEBGL FAILED - CANVAS MODE ACTIVE", 20, 40);
+                      return;
+                  }
 
-                  c.fillStyle = "#05050a";
-                  c.fillRect(0,0,canvas.width,canvas.height);
+                  gl.viewport(0,0,canvas.width,canvas.height);
 
-                  const g = c.createRadialGradient(
-                      canvas.width/2,
-                      canvas.height/2,
-                      10,
-                      canvas.width/2,
-                      canvas.height/2,
-                      canvas.width
-                  );
+                  gl.clearColor(0.02,0.02,0.05,1);
+                  gl.clear(gl.COLOR_BUFFER_BIT);
 
-                  g.addColorStop(0, "rgba(120,20,40,0.35)");
-                  g.addColorStop(1, "rgba(0,0,0,1)");
+                  const prog = Module.prog;
+                  gl.useProgram(prog);
 
-                  c.fillStyle = g;
-                  c.fillRect(0,0,canvas.width,canvas.height);
+                  gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time);
+                  gl.uniform1f(gl.getUniformLocation(prog,"uSanity"), Module.sanity);
 
-                  c.fillStyle = "white";
-                  c.font = "18px monospace";
-                  c.fillText("CANVAS2D MODE (WEBGL NOT AVAILABLE)", 20, 40);
-
-                  c.fillStyle = "red";
-                  c.beginPath();
-                  c.arc(canvas.width*0.6, canvas.height*0.5, 12, 0, Math.PI*2);
-                  c.fill();
-
-                  c.fillStyle = "white";
-                  c.beginPath();
-                  c.arc(canvas.width*0.4, canvas.height*0.5, 8, 0, Math.PI*2);
-                  c.fill();
-
+                  gl.drawArrays(gl.TRIANGLES,0,6);
               });
           }
 
           EMSCRIPTEN_KEEPALIVE
           void init(){
               EM_ASM({
-                  const canvas = document.body.appendChild(document.createElement("canvas"));
-                  canvas.width = window.innerWidth;
-                  canvas.height = window.innerHeight;
+                  const canvas = document.createElement("canvas");
+                  document.body.appendChild(canvas);
+
+                  function resize(){
+                      canvas.style.width = "100vw";
+                      canvas.style.height = "100vh";
+
+                      canvas.width = window.innerWidth * devicePixelRatio;
+                      canvas.height = window.innerHeight * devicePixelRatio;
+                  }
+
+                  window.addEventListener("resize", resize);
+                  resize();
 
                   Module.canvas = canvas;
 
-                  // WebGL2 attempt
-                  Module.gl = canvas.getContext("webgl2");
+                  const gl = canvas.getContext("webgl2");
 
-                  // Canvas2D fallback always ready
+                  Module.gl = gl;
                   Module.ctx2d = canvas.getContext("2d");
 
-                  Module.time = 0;
-                  Module.sanity = 1.0;
-
-                  if(Module.gl){
-                      const gl = Module.gl;
-
+                  if(gl){
                       const vs = `#version 300 es
                       in vec2 aPos;
-                      void main(){ gl_Position = vec4(aPos,0,1); }`;
+                      void main(){
+                          gl_Position = vec4(aPos,0,1);
+                      }`;
 
                       const fs = `#version 300 es
                       precision highp float;
-                      out vec4 frag;
 
-                      uniform float uSanity;
                       uniform float uTime;
+                      uniform float uSanity;
+
+                      out vec4 frag;
 
                       void main(){
                           vec3 col = vec3(0.02,0.02,0.05);
-                          col += uSanity * 0.25;
+                          col += uSanity * 0.3;
                           col += sin(uTime) * 0.02;
                           frag = vec4(col,1.0);
                       }`;
 
-                      function c(t,s){
-                          const sh = gl.createShader(t);
-                          gl.shaderSource(sh,s);
-                          gl.compileShader(sh);
-                          return sh;
+                      function compile(type, src){
+                          const s = gl.createShader(type);
+                          gl.shaderSource(s,src);
+                          gl.compileShader(s);
+
+                          if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+                              console.error(gl.getShaderInfoLog(s));
+                          }
+
+                          return s;
                       }
 
-                      const p = gl.createProgram();
-                      gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
-                      gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
-                      gl.linkProgram(p);
+                      const prog = gl.createProgram();
+                      gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+                      gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+                      gl.linkProgram(prog);
 
-                      gl.useProgram(p);
+                      if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+                          console.error(gl.getProgramInfoLog(prog));
+                      }
 
-                      const v = new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]);
-                      const b = gl.createBuffer();
-                      gl.bindBuffer(gl.ARRAY_BUFFER,b);
-                      gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
+                      gl.useProgram(prog);
 
-                      const loc = gl.getAttribLocation(p,"aPos");
+                      const verts = new Float32Array([
+                          -1,-1, 1,-1, 1,1,
+                          -1,-1, 1,1, -1,1
+                      ]);
+
+                      const buf = gl.createBuffer();
+                      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+                      const loc = gl.getAttribLocation(prog,"aPos");
                       gl.enableVertexAttribArray(loc);
                       gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
 
-                      Module.prog = p;
+                      Module.prog = prog;
+                  } else {
+                      console.warn("WebGL2 not available, using Canvas2D fallback");
                   }
               });
           }
@@ -206,8 +198,14 @@ jobs:
           <html>
           <head>
             <style>
-              body { margin:0; overflow:hidden; background:black; }
-              canvas { width:100vw; height:100vh; display:block; }
+              body {
+                margin:0;
+                overflow:hidden;
+                background:black;
+              }
+              canvas {
+                display:block;
+              }
             </style>
           </head>
           <body>

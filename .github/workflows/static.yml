@@ -1,0 +1,199 @@
+name: Deploy WASM Horror Engine to Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
+      - name: Generate Engine
+        run: |
+          mkdir -p src/engine src/core web
+
+          cat > src/engine/main.cpp << 'EOF'
+          #include <emscripten.h>
+
+          struct Entity {
+              float x,y,z;
+              float vx,vy,vz;
+              int type;
+          };
+
+          static Entity player{0,0,3,0,0,0,0};
+          static Entity stalker{2,0,2,0,0,0,1};
+
+          static float sanity = 1.0f;
+
+          void updatePhysics(){
+              stalker.vx = (player.x - stalker.x) * 0.01f;
+              stalker.vz = (player.z - stalker.z) * 0.01f;
+
+              stalker.x += stalker.vx;
+              stalker.z += stalker.vz;
+          }
+
+          void updateSanity(bool seen){
+              sanity -= seen ? 0.0015f : 0.0005f;
+              if (sanity < 0) sanity = 0;
+          }
+
+          extern "C" {
+
+          EMSCRIPTEN_KEEPALIVE
+          void init(){
+            EM_ASM({
+              const canvas = Module.canvas || document.body.appendChild(document.createElement("canvas"));
+              Module.canvas = canvas;
+
+              const gl = canvas.getContext("webgl2", { depth: true });
+              Module.gl = gl;
+
+              const vsSrc = `
+                attribute vec3 aPos;
+                void main(){
+                  gl_Position = vec4(aPos,1.0);
+                }
+              `;
+
+              const fsSrc = `
+                precision mediump float;
+                uniform float uSanity;
+                void main(){
+                  gl_FragColor = vec4(0.02 + uSanity, 0.01, 0.03, 1.0);
+                }
+              `;
+
+              function compile(t,s){
+                const sh = gl.createShader(t);
+                gl.shaderSource(sh,s);
+                gl.compileShader(sh);
+                return sh;
+              }
+
+              const prog = gl.createProgram();
+              gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+              gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+              gl.linkProgram(prog);
+
+              Module.prog = prog;
+
+              const verts = new Float32Array([
+                -1,-1,0,  1,-1,0,  1,1,0,
+                -1,-1,0,  1,1,0,  -1,1,0
+              ]);
+
+              const buf = gl.createBuffer();
+              gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+              gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+              const loc = gl.getAttribLocation(prog, "aPos");
+              gl.enableVertexAttribArray(loc);
+              gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+
+              Module.loc = loc;
+
+              gl.enable(gl.DEPTH_TEST);
+            });
+          }
+
+          EMSCRIPTEN_KEEPALIVE
+          void frame(){
+              updatePhysics();
+
+              bool seen = true;
+
+              updateSanity(seen);
+
+              EM_ASM({
+                  const gl = Module.gl;
+                  const prog = Module.prog;
+                  if (!gl || !prog) return;
+
+                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
+                  gl.clearColor(0.01,0.01,0.02,1);
+                  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                  gl.useProgram(prog);
+
+                  const loc = gl.getAttribLocation(prog,"aPos");
+                  gl.enableVertexAttribArray(loc);
+
+                  const u = gl.getUniformLocation(prog,"uSanity");
+                  gl.uniform1f(u, $0);
+
+                  gl.drawArrays(gl.TRIANGLES,0,6);
+              }, sanity);
+          }
+
+          }
+
+          int main(){
+              init();
+              emscripten_set_main_loop(frame, 60, 1);
+          }
+          EOF
+
+      - name: Build WASM Engine
+        run: |
+          em++ src/engine/main.cpp \
+            -O2 \
+            -s USE_WEBGL2=1 \
+            -s WASM=1 \
+            -s ALLOW_MEMORY_GROWTH=1 \
+            -o web/engine.js
+
+          cat > web/index.html << 'EOF'
+          <!doctype html>
+          <html>
+            <head>
+              <style>
+                body { margin:0; background:#000; overflow:hidden; }
+                canvas { width:100vw; height:100vh; display:block; }
+              </style>
+            </head>
+            <body>
+              <script>
+                var Module = {
+                  canvas: document.createElement("canvas")
+                };
+                document.body.appendChild(Module.canvas);
+              </script>
+              <script src="engine.js"></script>
+            </body>
+          </html>
+          EOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

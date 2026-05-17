@@ -23,257 +23,257 @@ jobs:
 
           # ================= CORE MATH =================
           cat > src/core/math.hpp << 'EOF'
-#pragma once
-#include <cmath>
+           #pragma once
+           #include <cmath>
 
-struct Vec3 {
-    float x,y,z;
-    Vec3():x(0),y(0),z(0){}
-    Vec3(float X,float Y,float Z):x(X),y(Y),z(Z){}
+           struct Vec3 {
+              float x,y,z;
+              Vec3():x(0),y(0),z(0){}
+              Vec3(float X,float Y,float Z):x(X),y(Y),z(Z){}
 
-    Vec3 operator+(const Vec3& b) const { return {x+b.x,y+b.y,z+b.z}; }
-    Vec3 operator-(const Vec3& b) const { return {x-b.x,y-b.y,z-b.z}; }
-    Vec3 operator*(float s) const { return {x*s,y*s,z*s}; }
-};
+              Vec3 operator+(const Vec3& b) const { return {x+b.x,y+b.y,z+b.z}; }
+              Vec3 operator-(const Vec3& b) const { return {x-b.x,y-b.y,z-b.z}; }
+              Vec3 operator*(float s) const { return {x*s,y*s,z*s}; }
+           };
 
-inline Vec3 normalize(Vec3 v){
-    float l = std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);
-    return l==0?v:Vec3{v.x/l,v.y/l,v.z/l};
-}
+           inline Vec3 normalize(Vec3 v){
+              float l = std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);
+              return l==0?v:Vec3{v.x/l,v.y/l,v.z/l};
+           }
 
-inline float dot(Vec3 a, Vec3 b){
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
-EOF
+           inline float dot(Vec3 a, Vec3 b){
+           return a.x*b.x + a.y*b.y + a.z*b.z;
+           }
+          EOF
 
           # ================= INPUT =================
           cat > src/engine/input.cpp << 'EOF'
-#pragma once
-#include <emscripten.h>
+           #pragma once
+           #include <emscripten.h>
 
-static bool keys[256];
-static float mx=0,my=0;
+           static bool keys[256];
+           static float mx=0,my=0;
 
-extern "C" {
-void keyDown(int k){ keys[k]=true; }
-void keyUp(int k){ keys[k]=false; }
-void mouseMove(float dx,float dy){ mx+=dx; my+=dy; }
-}
+           extern "C" {
+              void keyDown(int k){ keys[k]=true; }
+              void keyUp(int k){ keys[k]=false; }
+              void mouseMove(float dx,float dy){ mx+=dx; my+=dy; }
+           }
 
-inline bool isKeyDown(int k){ return keys[k]; }
-inline void consumeMouse(float &x,float &y){ x=mx;y=my;mx=my=0; }
-EOF
+           inline bool isKeyDown(int k){ return keys[k]; }
+           inline void consumeMouse(float &x,float &y){ x=mx;y=my;mx=my=0; }
+          EOF
 
           # ================= CAMERA =================
           cat > src/engine/camera.hpp << 'EOF'
-#pragma once
-#include "../core/math.hpp"
+           #pragma once
+           #include "../core/math.hpp"
 
-struct Camera {
-    float yaw=0,pitch=0;
-    Vec3 front{0,0,-1};
+           struct Camera {
+              float yaw=0,pitch=0;
+              Vec3 front{0,0,-1};
 
-    void update(float mx,float my){
-        float s=0.0025f;
-        yaw+=mx*s;
-        pitch-=my*s;
+              void update(float mx,float my){
+                 float s=0.0025f;
+                 yaw+=mx*s;
+                 pitch-=my*s;
 
-        if(pitch>1.5f) pitch=1.5f;
-        if(pitch<-1.5f) pitch=-1.5f;
+                 if(pitch>1.5f) pitch=1.5f;
+                 if(pitch<-1.5f) pitch=-1.5f;
 
-        front.x=cos(yaw)*cos(pitch);
-        front.y=sin(pitch);
-        front.z=sin(yaw)*cos(pitch);
+                 front.x=cos(yaw)*cos(pitch);
+                 front.y=sin(pitch);
+                 front.z=sin(yaw)*cos(pitch);
 
-        front=normalize(front);
-    }
-};
-EOF
+                 front=normalize(front);
+              }
+           };
+          EOF
 
           # ================= STALKER AI (RAYCAST LOS) =================
           cat > src/engine/stalker_ai.hpp << 'EOF'
-#pragma once
-#include "../core/math.hpp"
+           #pragma once
+           #include "../core/math.hpp"
 
-struct StalkerAI {
-    Vec3 pos;
-    float speed = 1.25f;
-    bool visible = false;
+           struct StalkerAI {
+              Vec3 pos;
+              float speed = 1.25f;
+              bool visible = false;
 
-    // simple ray-based LOS check
-    bool rayVisible(Vec3 origin, Vec3 dir){
-        Vec3 to = normalize(pos - origin);
-        float d = dot(to, dir);
+              // simple ray-based LOS check
+              bool rayVisible(Vec3 origin, Vec3 dir){
+              Vec3 to = normalize(pos - origin);
+              float d = dot(to, dir);
 
-        // stricter LOS than previous dot-product system
-        return d > 0.65f;
-    }
+              // stricter LOS than previous dot-product system
+              return d > 0.65f;
+              }
 
-    void update(Vec3 player, Vec3 viewDir){
+              void update(Vec3 player, Vec3 viewDir){
 
-        visible = rayVisible(player, viewDir);
+                 visible = rayVisible(player, viewDir);
 
-        if(!visible){
-            Vec3 dir = normalize(player - pos);
-            pos = pos + dir * speed * 0.02f;
-        }
-    }
-};
-EOF
+                 if(!visible){
+                     Vec3 dir = normalize(player - pos);
+                     pos = pos + dir * speed * 0.02f;
+                 }
+              }
+           };
+          EOF
 
           # ================= SANITY =================
           cat > src/engine/sanity.hpp << 'EOF'
-#pragma once
+           #pragma once
 
-struct Sanity {
-    float value = 1.0f;
+           struct Sanity {
+              float value = 1.0f;
 
-    void update(bool seen){
-        float rate = seen ? 0.1f : 0.02f;
-        value -= rate * 0.016f;
-        if(value < 0) value = 0;
-    }
+              void update(bool seen){
+                  float rate = seen ? 0.1f : 0.02f;
+                  value -= rate * 0.016f;
+                  if(value < 0) value = 0;
+              }
 
-    float intensity() const {
-        return 1.0f - value;
-    }
-};
-EOF
+              float intensity() const {
+                  return 1.0f - value;
+              }
+           };
+          EOF
 
           # ================= HALLUCINATION =================
           cat > src/engine/hallucination.hpp << 'EOF'
-#pragma once
-#include <cstdlib>
+           #pragma once
+           #include <cstdlib>
 
-struct Hallucination {
-    bool flicker=false;
-    bool shadow=false;
-    bool redflash=false;
+           struct Hallucination {
+               bool flicker=false;
+               bool shadow=false;
+               bool redflash=false;
 
-    void update(float i){
-        flicker = (rand()%1000) < i*150;
-        shadow  = (rand()%2000) < i*120;
-        redflash = (rand()%3000) < i*100;
-    }
-};
-EOF
+               void update(float i){
+                   flicker = (rand()%1000) < i*150;
+                   shadow  = (rand()%2000) < i*120;
+                   redflash = (rand()%3000) < i*100;
+               }
+           };
+          EOF
 
           # ================= MAIN (3D + SHADOW + RAY SYSTEM) =================
           cat > src/engine/main.cpp << 'EOF'
-#include <emscripten.h>
+          #include <emscripten.h>
 
-#include "camera.hpp"
-#include "input.cpp"
-#include "stalker_ai.hpp"
-#include "sanity.hpp"
-#include "hallucination.hpp"
+          #include "camera.hpp"
+          #include "input.cpp"
+          #include "stalker_ai.hpp"
+          #include "sanity.hpp"
+          #include "hallucination.hpp"
 
-Vec3 player{0,0,3};
-Camera cam;
-StalkerAI stalker{{2,0,2}};
-Sanity sanity;
-Hallucination halluc;
+          Vec3 player{0,0,3};
+          Camera cam;
+          StalkerAI stalker{{2,0,2}};
+          Sanity sanity;
+          Hallucination halluc;
 
-extern "C" void frame(){
+          extern "C" void frame(){
 
-    float mx,my;
-    consumeMouse(mx,my);
+              float mx,my;
+              consumeMouse(mx,my);
 
-    cam.update(mx,my);
+              cam.update(mx,my);
 
-    Vec3 right = normalize({-cam.front.z,0,cam.front.x});
+              Vec3 right = normalize({-cam.front.z,0,cam.front.x});
 
-    float speed=0.08f;
+              float speed=0.08f;
 
-    if(isKeyDown('W')) player = player + cam.front*speed;
-    if(isKeyDown('S')) player = player - cam.front*speed;
-    if(isKeyDown('A')) player = player - right*speed;
-    if(isKeyDown('D')) player = player + right*speed;
+              if(isKeyDown('W')) player = player + cam.front*speed;
+              if(isKeyDown('S')) player = player - cam.front*speed;
+              if(isKeyDown('A')) player = player - right*speed;
+              if(isKeyDown('D')) player = player + right*speed;
 
-    stalker.update(player, cam.front);
-    sanity.update(stalker.visible);
-    halluc.update(sanity.intensity());
+              stalker.update(player, cam.front);
+              sanity.update(stalker.visible);
+              halluc.update(sanity.intensity());
 
-    EM_ASM({
+              EM_ASM({
 
-        const gl = Module.canvas.getContext("webgl2",{depth:true});
+                  const gl = Module.canvas.getContext("webgl2",{depth:true});
 
-        gl.enable(gl.DEPTH_TEST);
+                  gl.enable(gl.DEPTH_TEST);
 
-        gl.clearColor(0.01,0.01,0.02,1);
-        gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+                  gl.clearColor(0.01,0.01,0.02,1);
+                  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 
-        // ================= SHADER =================
-        const vs = `
-        attribute vec3 aPos;
-        uniform float uTime;
-        uniform float uSanity;
+                  // ================= SHADER =================
+                  const vs = `
+                  attribute vec3 aPos;
+                  uniform float uTime;
+                  uniform float uSanity;
 
-        void main(){
-            float wobble = sin(uTime + aPos.x*5.0)*uSanity*0.25;
-            gl_Position = vec4(aPos.x,aPos.y+wobble,aPos.z,1.0);
-        }`;
+                  void main(){
+                      float wobble = sin(uTime + aPos.x*5.0)*uSanity*0.25;
+                      gl_Position = vec4(aPos.x,aPos.y+wobble,aPos.z,1.0);
+                  }`;
 
-        const fs = `
-        precision mediump float;
-        uniform float uSanity;
+                  const fs = `
+                  precision mediump float;
+                  uniform float uSanity;
 
-        void main(){
-            gl_FragColor = vec4(0.02+uSanity,0.01,0.03,1.0);
-        }`;
+                  void main(){
+                      gl_FragColor = vec4(0.02+uSanity,0.01,0.03,1.0);
+                  }`;
 
-        function c(t,s){const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;}
+                  function c(t,s){const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);return sh;}
 
-        const prog=gl.createProgram();
-        gl.attachShader(prog,c(gl.VERTEX_SHADER,vs));
-        gl.attachShader(prog,c(gl.FRAGMENT_SHADER,fs));
-        gl.linkProgram(prog);
-        gl.useProgram(prog);
+                  const prog=gl.createProgram();
+                  gl.attachShader(prog,c(gl.VERTEX_SHADER,vs));
+                  gl.attachShader(prog,c(gl.FRAGMENT_SHADER,fs));
+                  gl.linkProgram(prog);
+                  gl.useProgram(prog);
 
-        // ================= CUBE =================
-        const verts=new Float32Array([
-            -1,-1,-1, 1,-1,-1, 1,1,-1,
-            -1,-1,-1, 1,1,-1, -1,1,-1
-        ]);
+                  // ================= CUBE =================
+                  const verts=new Float32Array([
+                      -1,-1,-1, 1,-1,-1, 1,1,-1,
+                      -1,-1,-1, 1,1,-1, -1,1,-1
+                  ]);
 
-        const buf=gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-        gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
+                  const buf=gl.createBuffer();
+                  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+                  gl.bufferData(gl.ARRAY_BUFFER,verts,gl.STATIC_DRAW);
 
-        const loc=gl.getAttribLocation(prog,"aPos");
-        gl.enableVertexAttribArray(loc);
-        gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);
+                  const loc=gl.getAttribLocation(prog,"aPos");
+                  gl.enableVertexAttribArray(loc);
+                  gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);
 
-        const tLoc=gl.getUniformLocation(prog,"uTime");
-        const sLoc=gl.getUniformLocation(prog,"uSanity");
+                  const tLoc=gl.getUniformLocation(prog,"uTime");
+                  const sLoc=gl.getUniformLocation(prog,"uSanity");
 
-        gl.uniform1f(tLoc, $0);
-        gl.uniform1f(sLoc, $1);
+                  gl.uniform1f(tLoc, $0);
+                  gl.uniform1f(sLoc, $1);
 
-        gl.drawArrays(gl.TRIANGLES,0,6);
+                  gl.drawArrays(gl.TRIANGLES,0,6);
 
-        // ================= HORROR LAYERS =================
-        if($2){
-            gl.clearColor(0,0,0,0.2);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-        }
+                  // ================= HORROR LAYERS =================
+                  if($2){
+                      gl.clearColor(0,0,0,0.2);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                  }
 
-        if($3){
-            gl.clearColor(1,0,0,0.05);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-        }
+                  if($3){
+                      gl.clearColor(1,0,0,0.05);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                  }
 
-    },
-    0,
-    sanity.intensity(),
-    halluc.shadow,
-    halluc.redflash);
-}
+               },
+               0,
+               sanity.intensity(),
+               halluc.shadow,
+               halluc.redflash);
+           }
 
-int main(){
-    emscripten_set_main_loop(frame,60,1);
-}
-EOF
+           int main(){
+               emscripten_set_main_loop(frame,60,1);
+           }
+          EOF
 
       - name: Build WASM Engine
         run: |

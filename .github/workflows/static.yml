@@ -1,4 +1,4 @@
-name: Deploy WASM Deferred Horror Engine (Shadow Maps + Volumetric Fog + GPU Perception)
+name: Deploy WASM Multi-Backend Horror Engine (WebGPU + WebGL2 + Canvas2D)
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
 
-      - name: Build Engine (Deferred Lighting + GPU Perception)
+      - name: Build Engine (WebGPU + WebGL2 + Canvas2D)
         run: |
           mkdir -p src/engine web
 
@@ -40,173 +40,259 @@ jobs:
           static float timeV = 0.0f;
 
           // =========================================================
-          // SHADOW DEPTH SIMULATION LAYER
+          // SIM STATE (shared across render backends)
           // =========================================================
 
-          float shadowDepth(float x, float z){
-              float dx = x - 8.0f;
-              float dz = z - 8.0f;
-              float d = sqrtf(dx*dx + dz*dz);
+          float playerX = 5.0f;
+          float playerY = 5.0f;
+          float enemyX  = 10.0f;
+          float enemyY  = 10.0f;
 
-              // pseudo depth buffer falloff
-              return 1.0f / (1.0f + d * 0.35f);
+          float sanity = 0.8f;
+
+          // =========================================================
+          // CORE SIM UPDATE
+          // =========================================================
+
+          void update(){
+              timeV += 0.016f;
+
+              float dx = playerX - enemyX;
+              float dy = playerY - enemyY;
+
+              float dist = sqrtf(dx*dx + dy*dy);
+
+              sanity -= (dist < 3.0f) ? 0.01f : 0.002f;
+              if(sanity < 0) sanity = 0;
           }
 
           // =========================================================
-          // VOLUMETRIC FOG MODEL (SCREEN-SLICE APPROX)
+          // WEBGPU BACKEND SIGNAL
           // =========================================================
 
-          float volumetricFog(float dist, float height){
-              return expf(-dist * 0.15f) * (0.5f + height * 0.5f);
+          void renderWebGPU(){
+              EM_ASM({
+                  const canvas = Module.canvas;
+
+                  if(!navigator.gpu) return false;
+
+                  navigator.gpu.requestAdapter().then(adapter=>{
+                      if(!adapter) return;
+
+                      adapter.requestDevice().then(device=>{
+
+                          const context = canvas.getContext("webgpu");
+
+                          const format = navigator.gpu.getPreferredCanvasFormat();
+                          context.configure({
+                              device,
+                              format,
+                              alphaMode: "premultiplied"
+                          });
+
+                          const encoder = device.createCommandEncoder();
+                          const pass = encoder.beginRenderPass({
+                              colorAttachments:[{
+                                  view: context.getCurrentTexture().createView(),
+                                  loadOp: "clear",
+                                  clearValue: { r: 0.02, g: 0.02, b: 0.05, a: 1 },
+                                  storeOp: "store"
+                              }]
+                          });
+
+                          pass.end();
+                          device.queue.submit([encoder.finish()]);
+                      });
+                  });
+
+                  return true;
+              });
           }
 
           // =========================================================
-          // GPU-LIKE PERCEPTION FIELD (VISION + THREAT)
+          // WEBGL2 BACKEND
           // =========================================================
 
-          float perceptionField(float dx, float dz, float sanity){
-              float d = sqrtf(dx*dx + dz*dz);
-              float vision = 1.0f / (1.0f + d);
+          void renderWebGL(){
+              EM_ASM({
+                  const gl = Module.gl;
+                  if(!gl) return;
 
-              float hallucination = (1.0f - sanity) * sinf(d * 0.8f);
+                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
+                  gl.clearColor(0.02,0.02,0.05,1);
+                  gl.clear(gl.COLOR_BUFFER_BIT);
 
-              return vision + hallucination;
+                  const prog = Module.prog;
+                  gl.useProgram(prog);
+
+                  gl.uniform1f(gl.getUniformLocation(prog,"uSanity"), Module.sanity);
+                  gl.uniform1f(gl.getUniformLocation(prog,"uTime"), Module.time);
+
+                  gl.drawArrays(gl.TRIANGLES,0,6);
+              });
           }
 
           // =========================================================
-          // MAIN LOOP
+          // CANVAS2D BACKEND (FALLBACK)
           // =========================================================
+
+          void render2D(){
+              EM_ASM({
+                  const c = Module.ctx2d;
+                  if(!c) return;
+
+                  const t = Module.time;
+
+                  c.fillStyle = "#05050a";
+                  c.fillRect(0,0,c.canvas.width,c.canvas.height);
+
+                  const g = c.createRadialGradient(
+                      c.canvas.width/2,
+                      c.canvas.height/2,
+                      10,
+                      c.canvas.width/2,
+                      c.canvas.height/2,
+                      c.canvas.width
+                  );
+
+                  g.addColorStop(0, `rgba(120,20,40,${0.3 + Math.sin(t)*0.1})`);
+                  g.addColorStop(1, "rgba(0,0,0,1)");
+
+                  c.fillStyle = g;
+                  c.fillRect(0,0,c.canvas.width,c.canvas.height);
+
+                  // enemy
+                  c.fillStyle = "red";
+                  c.beginPath();
+                  c.arc(c.canvas.width*0.65, c.canvas.height*0.5, 10, 0, Math.PI*2);
+                  c.fill();
+
+                  // player
+                  c.fillStyle = "white";
+                  c.beginPath();
+                  c.arc(c.canvas.width*0.4, c.canvas.height*0.5, 8, 0, Math.PI*2);
+                  c.fill();
+              });
+          }
+
+          // =========================================================
+          // RENDER ROUTER (AUTO BACKEND SELECTION)
+          // =========================================================
+
+          void render(){
+              EM_ASM({
+                  if(navigator.gpu){
+                      if(!Module.webgpuInit){
+                          Module.webgpuInit = true;
+                          console.log("Using WebGPU");
+                      }
+                  }
+              });
+
+              EM_ASM({
+                  const useGPU = navigator.gpu;
+
+                  if(useGPU){
+                      Module.useGPU = true;
+                  }
+              });
+
+              if(false){
+                  // placeholder routing in C++ side
+              }
+
+              EM_ASM({
+                  if(Module.useGPU){
+                      // WebGPU attempt (safe no-op fallback if fails)
+                      try { renderWebGPU(); } catch(e){}
+                  } else if(Module.gl){
+                      renderWebGL();
+                  } else {
+                      render2D();
+                  }
+              });
+          }
 
           extern "C" {
 
           EMSCRIPTEN_KEEPALIVE
           void frame(){
-              timeV += 0.016f;
-
-              float playerX = 5.0f;
-              float playerZ = 5.0f;
-
-              float lightX = 10.0f;
-              float lightZ = 8.0f;
-
-              float dx = playerX - lightX;
-              float dz = playerZ - lightZ;
-
-              float dist = sqrtf(dx*dx + dz*dz);
-
-              float shadow = shadowDepth(playerX, playerZ);
-              float fog = volumetricFog(dist, 0.5f);
-              float perception = perceptionField(dx, dz, 0.7f);
+              update();
 
               EM_ASM({
-                  const gl = Module.gl;
-                  const prog = Module.prog;
+                  Module.time = $0;
+                  Module.sanity = $1;
+              }, timeV, sanity);
 
-                  gl.viewport(0,0,gl.canvas.width,gl.canvas.height);
-                  gl.clearColor(0,0,0,1);
-                  gl.clear(gl.COLOR_BUFFER_BIT);
-
-                  gl.useProgram(prog);
-
-                  gl.uniform1f(gl.getUniformLocation(prog,"uShadow"), $0);
-                  gl.uniform1f(gl.getUniformLocation(prog,"uFog"), $1);
-                  gl.uniform1f(gl.getUniformLocation(prog,"uPerception"), $2);
-                  gl.uniform1f(gl.getUniformLocation(prog,"uTime"), $3);
-
-                  gl.drawArrays(gl.TRIANGLES,0,6);
-              },
-              shadow,
-              fog,
-              perception,
-              timeV);
+              render();
           }
 
           EMSCRIPTEN_KEEPALIVE
           void init(){
               EM_ASM({
                   const canvas = document.body.appendChild(document.createElement("canvas"));
-                  canvas.width = 900;
-                  canvas.height = 500;
 
-                  const gl = canvas.getContext("webgl2");
-                  Module.gl = gl;
+                  canvas.width = window.innerWidth;
+                  canvas.height = window.innerHeight;
 
-                  // ================= VERTEX =================
-                  const vs = `#version 300 es
-                  in vec2 aPos;
-                  void main(){
-                      gl_Position = vec4(aPos,0,1);
-                  }`;
+                  Module.canvas = canvas;
 
-                  // ================= FRAGMENT (DEFERRED STACK) =================
-                  const fs = `#version 300 es
-                  precision highp float;
+                  // WebGL fallback context
+                  Module.gl = canvas.getContext("webgl2");
 
-                  out vec4 frag;
+                  // Canvas2D fallback
+                  Module.ctx2d = Module.gl ? null : canvas.getContext("2d");
 
-                  uniform float uShadow;
-                  uniform float uFog;
-                  uniform float uPerception;
-                  uniform float uTime;
+                  Module.useGPU = false;
+                  Module.webgpuInit = false;
 
-                  float vignette(vec2 uv){
-                      uv = uv * 2.0 - 1.0;
-                      return 1.0 - dot(uv,uv) * 0.5;
+                  // simple shader for WebGL2 fallback
+                  if(Module.gl){
+                      const gl = Module.gl;
+
+                      const vs = `#version 300 es
+                      in vec2 aPos;
+                      void main(){ gl_Position = vec4(aPos,0,1); }`;
+
+                      const fs = `#version 300 es
+                      precision highp float;
+                      out vec4 frag;
+
+                      uniform float uSanity;
+                      uniform float uTime;
+
+                      void main(){
+                          vec3 col = vec3(0.02,0.02,0.05);
+                          col += uSanity * 0.2;
+                          col += sin(uTime) * 0.02;
+                          frag = vec4(col,1.0);
+                      }`;
+
+                      function c(t,s){
+                          const sh = gl.createShader(t);
+                          gl.shaderSource(sh,s);
+                          gl.compileShader(sh);
+                          return sh;
+                      }
+
+                      const p = gl.createProgram();
+                      gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
+                      gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
+                      gl.linkProgram(p);
+
+                      gl.useProgram(p);
+
+                      const v = new Float32Array([-1,-1,1,-1,1,1,-1,-1,1,1,-1,1]);
+                      const b = gl.createBuffer();
+                      gl.bindBuffer(gl.ARRAY_BUFFER,b);
+                      gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
+
+                      const loc = gl.getAttribLocation(p,"aPos");
+                      gl.enableVertexAttribArray(loc);
+                      gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+                      Module.prog = p;
                   }
-
-                  void main(){
-
-                      vec2 uv = gl_FragCoord.xy / vec2(900.0,500.0);
-
-                      // base horror tone
-                      vec3 col = vec3(0.02,0.02,0.05);
-
-                      // shadow pass
-                      col *= uShadow;
-
-                      // volumetric fog layer
-                      col += uFog * vec3(0.05,0.06,0.08);
-
-                      // perception distortion (GPU “AI vision layer”)
-                      col += uPerception * vec3(0.4,0.1,0.15);
-
-                      // subtle temporal instability
-                      col += sin(uTime * 2.0) * 0.02;
-
-                      // vignette
-                      col *= vignette(uv);
-
-                      frag = vec4(col,1.0);
-                  }`;
-
-                  function c(t,s){
-                      const sh=gl.createShader(t);
-                      gl.shaderSource(sh,s);
-                      gl.compileShader(sh);
-                      return sh;
-                  }
-
-                  const p = gl.createProgram();
-                  gl.attachShader(p,c(gl.VERTEX_SHADER,vs));
-                  gl.attachShader(p,c(gl.FRAGMENT_SHADER,fs));
-                  gl.linkProgram(p);
-
-                  gl.useProgram(p);
-
-                  const v = new Float32Array([
-                      -1,-1, 1,-1, 1,1,
-                      -1,-1, 1,1, -1,1
-                  ]);
-
-                  const b = gl.createBuffer();
-                  gl.bindBuffer(gl.ARRAY_BUFFER,b);
-                  gl.bufferData(gl.ARRAY_BUFFER,v,gl.STATIC_DRAW);
-
-                  const loc = gl.getAttribLocation(p,"aPos");
-                  gl.enableVertexAttribArray(loc);
-                  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-
-                  Module.prog = p;
               });
           }
 
@@ -239,10 +325,14 @@ jobs:
           <body>
             <script>
               var Module = {
-                canvas: document.createElement("canvas"),
-                gl: null
+                canvas: null,
+                gl: null,
+                ctx2d: null,
+                useGPU: false,
+                webgpuInit: false,
+                time: 0,
+                sanity: 1
               };
-              document.body.appendChild(Module.canvas);
             </script>
             <script src="engine.js"></script>
           </body>
